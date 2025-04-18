@@ -9,7 +9,6 @@ app.use(helmet());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Endpoint to register a posting or aggregation server
 app.post("/register", async (req, res) => {
   console.log("Registering server...");
   const { type, url } = req.body;
@@ -18,7 +17,6 @@ app.post("/register", async (req, res) => {
   }
   try {
     let server;
-    // Use upsert so that a server with the same URL is updated
     server = await Server.findOneAndUpdate(
       {
         url,
@@ -45,7 +43,6 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// Endpoint to retrieve all registered servers
 app.get("/servers", async (req, res) => {
   try {
     console.log("Fetching all registered servers...");

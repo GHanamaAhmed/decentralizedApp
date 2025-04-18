@@ -46,22 +46,6 @@ app.use(express.json()); // For parsing JSON bodies
 // Utility: Authentication Middleware
 // ========================
 // This middleware verifies the JWT sent in the Authorization header.
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers.authorization;
-  console.log(authHeader);
-
-  if (!authHeader) return res.status(401).json({ error: "No token provided" });
-
-  // Expected header format: "Bearer <token>"
-  const token = authHeader.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Malformed token" });
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ error: "Invalid token" });
-    req.user = decoded; // decoded contains user's information (e.g. id, username)
-    next();
-  });
-}
 
 // ========================
 // Authentication Endpoints
@@ -71,36 +55,28 @@ function authenticateToken(req, res, next) {
 app.post("/auth/register", async (req, res) => {
   console.log("Registering a new user...");
 
-  const { username, email, password } = req.body;
+  const { username } = req.body;
   // Basic field validation
-  if (!username || !email || !password) {
+  if (!username) {
     return res
       .status(400)
       .json({ error: "Missing username, email or password" });
   }
   try {
     // Check if user already exists
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    const existingUser = await User.findOne({ $or: [{ username }] });
     if (existingUser) {
       return res.status(409).json({ error: "User already exists" });
     }
     // Hash the password before storing it in the DB
-    const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = await User.create({
       username,
-      email,
-      password: hashedPassword,
     });
 
-    // create token payload
-    const payload = { id: newUser._id, username: newUser.username };
-    // create token
-    const token = jwt.sign(payload, process.env.JWT_SECRET, {
-      expiresIn: "720h",
-    });
+    //
     res
       .status(201)
-      .json({ message: "User registered successfully", user: payload, token });
+      .json({ message: "User registered successfully", user: newUser });
   } catch (error) {
     console.error("Registration error:", error);
     res.status(500).json({ error: "Server error during registration" });
@@ -109,24 +85,19 @@ app.post("/auth/register", async (req, res) => {
 
 // Login user and return a JWT
 app.post("/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
+  const { username } = req.body;
+  if (!username) {
     return res.status(400).json({ error: "Missing email or password" });
   }
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ username });
     if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
     // Compare provided password with the stored hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
     // Create JWT payload and sign token
-    const payload = { id: user._id, username: user.username };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, {
-      expiresIn: "720h",
-    });
-    res.json({ token, user: payload });
+
+    res.json({ user });
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ error: "Server error during login" });
@@ -138,20 +109,26 @@ app.post("/auth/login", async (req, res) => {
 // ========================
 
 // Create a new post
-app.post("/post", authenticateToken, async (req, res) => {
+app.post("/post", async (req, res) => {
   console.log("Creating a new post...");
-  const { content, topic } = req.body;
-  if (!content || !topic) {
-    return res.status(400).json({ error: "Missing content or topic" });
+  const { content, topic, username } = req.body;
+  if (!content || !topic || !username) {
+    return res
+      .status(400)
+      .json({ error: "Missing content or topic or username" });
   }
   try {
+    // searching for user
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
     // Use the authenticated user's ID from req.user
     const post = await Post.create({
-      user: req.user.id,
+      user: user._id,
       content,
       topic,
     });
-    // Emit the new post to all connected clients in the namespace
     postsNameSpace.emit("newPost", post);
     console.log("Post created:", post);
     res.status(201).json(post);
@@ -168,9 +145,9 @@ app.get("/posts", async (req, res) => {
     // Populate the user field (and comments.user) to fetch user details with the post
     const posts = await Post.find({})
       .sort({ createdAt: -1 })
-      .populate("user", "username email avatar")
-      .populate("comments.user", "username email avatar");
+      .populate("user", "username");
     console.log("Posts retrieved:", posts);
+
     res.json(posts);
   } catch (error) {
     console.error("Error retrieving posts:", error);
@@ -178,54 +155,31 @@ app.get("/posts", async (req, res) => {
   }
 });
 
-// Add a comment to a post
-app.post("/post/:postId/comment", authenticateToken, async (req, res) => {
-  console.log("Adding a comment to post:", req.params.postId);
-  const { content } = req.body;
-  if (!content) {
-    return res.status(400).json({ error: "Missing comment content" });
-  }
-  try {
-    const post = await Post.findById(req.params.postId);
-    if (!post) return res.status(404).json({ error: "Post not found" });
-
-    // Add a new comment. Use the authenticated user's id.
-    post.comments.push({ user: req.user.id, content });
-    await post.save();
-
-    // Optionally, you may emit an event for new comment notifications
-    postsNameSpace.emit("newComment", {
-      postId: post._id,
-      comment: post.comments.slice(-1)[0],
-    });
-
-    console.log("Comment added:", post.comments.slice(-1)[0]);
-    res.status(201).json(post);
-  } catch (error) {
-    console.error("Error adding comment:", error);
-    res.status(500).json({ error: "Error adding comment" });
-  }
-});
-
 // Like a post
-app.post("/post/:postId/like", authenticateToken, async (req, res) => {
+app.post("/post/:postId/like", async (req, res) => {
   console.log("Liking post:", req.params.postId);
   try {
+    const username = req.body.username;
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const post = await Post.findById(req.params.postId);
     if (!post) return res.status(404).json({ error: "Post not found" });
 
     // Prevent duplicate likes by the same user
-    if (post.likes.includes(req.user.id)) {
+    if (post.likes.includes(user.id)) {
       return res.status(400).json({ error: "You already liked this post" });
     }
 
-    post.likes.push(req.user.id);
+    post.likes.push(user.id);
     await post.save();
 
     // Emit an event if you need real-time like updates
     postsNameSpace.emit("postLiked", { postId: post._id, likes: post.likes });
 
-    console.log("Post liked by user:", req.user.id);
+    console.log("Post liked by user:", user.id);
     res.json(post);
   } catch (error) {
     console.error("Error liking post:", error);
@@ -234,22 +188,26 @@ app.post("/post/:postId/like", authenticateToken, async (req, res) => {
 });
 
 // Optionally, you can implement an unlike endpoint
-app.post("/post/:postId/unlike", authenticateToken, async (req, res) => {
+app.post("/post/:postId/unlike", async (req, res) => {
   console.log("Unliking post:", req.params.postId);
   try {
+    const username = req.body.username;
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const post = await Post.findById(req.params.postId);
     if (!post) return res.status(404).json({ error: "Post not found" });
 
     // Remove the user's like if it exists
-    post.likes = post.likes.filter(
-      (likeId) => likeId.toString() !== req.user.id
-    );
+    post.likes = post.likes.filter((likeId) => likeId.toString() !== user.id);
     await post.save();
 
     // Emit an event if needed for real-time updates
     postsNameSpace.emit("postUnliked", { postId: post._id, likes: post.likes });
 
-    console.log("Post unliked by user:", req.user.id);
+    console.log("Post unliked by user:", user.id);
     res.json(post);
   } catch (error) {
     console.error("Error unliking post:", error);
@@ -261,7 +219,7 @@ app.post("/post/:postId/unlike", authenticateToken, async (req, res) => {
 // POST /subscription
 // Create a new subscription (by user and/or by topic)
 // ------------------------------------------------------------------------
-app.post("/subscription", authenticateToken, async (req, res) => {
+app.post("/subscription", async (req, res) => {
   try {
     const { username, topic } = req.body;
 
@@ -311,7 +269,7 @@ app.post("/subscription", authenticateToken, async (req, res) => {
 // DELETE /subscription
 // Delete a subscription using the user and/or topic provided in the request body
 // ------------------------------------------------------------------------
-app.delete("/subscription", authenticateToken, async (req, res) => {
+app.delete("/subscription", async (req, res) => {
   try {
     const { username, topic } = req.body;
 
@@ -342,7 +300,7 @@ app.delete("/subscription", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Error deleting subscription" });
   }
 });
-app.get("/subscription", authenticateToken, async (req, res) => {
+app.get("/subscription", async (req, res) => {
   try {
     // Read optional query parameters, e.g., /subscription?user=...&topic=...
     const { user, topic } = req.query;
@@ -376,21 +334,27 @@ postsNameSpace.on("connection", (socket) => {
 // Add a like to a post
 // Endpoint: POST /post/:postId/like
 // ------------------------------------------------------------------------
-app.post("/post/:postId/like", authenticateToken, async (req, res) => {
+app.post("/post/:postId/like", async (req, res) => {
   console.log("Liking post:", req.params.postId);
   try {
+    const username = req.body.username;
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const post = await Post.findById(req.params.postId);
     if (!post) {
       return res.status(404).json({ error: "Post not found" });
     }
 
     // Prevent duplicate likes by the same user
-    if (post.likes.includes(req.user.id)) {
+    if (post.likes.includes(user.id)) {
       return res.status(400).json({ error: "User already liked this post" });
     }
 
     // Add the user's like
-    post.likes.push(req.user.id);
+    post.likes.push(user.id);
     await post.save();
 
     // Optionally, emit an event for real-time updates (if using Socket.IO)
@@ -407,9 +371,15 @@ app.post("/post/:postId/like", authenticateToken, async (req, res) => {
 // Remove a like from a post
 // Endpoint: POST /post/:postId/unlike
 // ------------------------------------------------------------------------
-app.post("/post/:postId/unlike", authenticateToken, async (req, res) => {
+app.post("/post/:postId/unlike", async (req, res) => {
   console.log("Unliking post:", req.params.postId);
   try {
+    const username = req.body.username;
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const post = await Post.findById(req.params.postId);
     if (!post) {
       return res.status(404).json({ error: "Post not found" });
@@ -417,9 +387,7 @@ app.post("/post/:postId/unlike", authenticateToken, async (req, res) => {
 
     // Remove the user's like if it exists
     const initialLikeCount = post.likes.length;
-    post.likes = post.likes.filter(
-      (likeId) => likeId.toString() !== req.user.id
-    );
+    post.likes = post.likes.filter((likeId) => likeId.toString() !== user.id);
 
     // Only save if the like was removed
     if (post.likes.length === initialLikeCount) {

@@ -6,18 +6,14 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 app.use(helmet());
-// Example: an array of posting server URLs
-const postingServers = [
-  "http://localhost:3001", // adjust as necessary
-];
 
-// Endpoint to retrieve the aggregated feed
+const postingServers = ["http://localhost:3001"];
+
 app.get("/feed", async (req, res) => {
   console.log("Fetching aggregated feed from posting servers...");
 
   try {
     let allPosts = [];
-    // Loop over each posting server and fetch posts
     for (const serverUrl of postingServers) {
       try {
         const response = await axios.get(`${serverUrl}/posts`);
@@ -26,7 +22,6 @@ app.get("/feed", async (req, res) => {
         console.error(`Error fetching posts from ${serverUrl}:`, error.message);
       }
     }
-    // Sort posts by creation date (most recent first)
     allPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     console.log("Aggregated posts:", allPosts);
 
