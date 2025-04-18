@@ -8,22 +8,7 @@ const userSchema = new mongoose.Schema({
     required: true,
     unique: true, // ensures that no two users can have the same username
   },
-  // The user's email address
-  email: {
-    type: String,
-    required: true,
-    unique: true, // ensures that no two users can have the same email
-  },
-  // The user's password (note: it should be hashed before saving)
-  password: {
-    type: String,
-    required: true,
-  },
-  // Optional field for the user's avatar image URL
-  avatar: {
-    type: String,
-    default: null,
-  },
+
   // Automatically set the account creation date
   createdAt: {
     type: Date,
