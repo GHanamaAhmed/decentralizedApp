@@ -51,38 +51,6 @@ app.use(express.json()); // For parsing JSON bodies
 // Authentication Endpoints
 // ========================
 
-// Register a new user
-app.post("/auth/register", async (req, res) => {
-  console.log("Registering a new user...");
-
-  const { username } = req.body;
-  // Basic field validation
-  if (!username) {
-    return res
-      .status(400)
-      .json({ error: "Missing username, email or password" });
-  }
-  try {
-    // Check if user already exists
-    const existingUser = await User.findOne({ $or: [{ username }] });
-    if (existingUser) {
-      return res.status(409).json({ error: "User already exists" });
-    }
-    // Hash the password before storing it in the DB
-    const newUser = await User.create({
-      username,
-    });
-
-    //
-    res
-      .status(201)
-      .json({ message: "User registered successfully", user: newUser });
-  } catch (error) {
-    console.error("Registration error:", error);
-    res.status(500).json({ error: "Server error during registration" });
-  }
-});
-
 // Login user and return a JWT
 app.post("/auth/login", async (req, res) => {
   const { username } = req.body;
@@ -90,12 +58,10 @@ app.post("/auth/login", async (req, res) => {
     return res.status(400).json({ error: "Missing email or password" });
   }
   try {
-    const user = await User.findOne({ username });
-    if (!user) return res.status(400).json({ error: "Invalid credentials" });
-
-    // Compare provided password with the stored hashed password
-
-    // Create JWT payload and sign token
+    let user = await User.findOne({ username });
+    if (!user) {
+      user = await User.create({ username });
+    }
 
     res.json({ user });
   } catch (error) {
@@ -221,32 +187,39 @@ app.post("/post/:postId/unlike", async (req, res) => {
 // ------------------------------------------------------------------------
 app.post("/subscription", async (req, res) => {
   try {
-    const { username, topic } = req.body;
+    const { username, topic, susername } = req.body;
 
     // Validate that at least one identifier (user or topic) is provided.
-    if (!username && !topic) {
+    if (!susername && !topic) {
       return res
         .status(400)
         .json({ error: "Either user or topic must be provided." });
     }
-    // sereach for existing subscription
-    const existingSubscription = await Subscription.findOne({
-      $or: [{ username }, { topic }],
-    });
-    if (existingSubscription) {
-      return res.status(409).json({
-        error: "Subscription already exists for this user and topic.",
-      });
-    }
-    // search is existing user
     const user = await User.findOne({
       username,
     });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
+    // sereach for existing subscription
+    const existingSubscription = await Subscription.findOne({
+      $or: [
+        susername
+          ? { user: user._id, username: susername }
+          : { user: user._id, topic },
+      ],
+    });
+    if (existingSubscription) {
+      return res.status(409).json({
+        error: "Subscription already exists for this user and topic.",
+      });
+    }
     // Create the new subscription.
-    const newSubscription = new Subscription({ username, topic });
+    const newSubscription = new Subscription({
+      user: user._id,
+      username: susername,
+      topic,
+    });
     const savedSubscription = await newSubscription.save();
 
     // Respond with the saved subscription object.
@@ -271,20 +244,25 @@ app.post("/subscription", async (req, res) => {
 // ------------------------------------------------------------------------
 app.delete("/subscription", async (req, res) => {
   try {
-    const { username, topic } = req.body;
+    const { username, topic, susername } = req.body;
 
     // Validate that at least one identifier (user or topic) is provided.
-    if (!username && !topic) {
+    if (!susername && !topic) {
       return res.status(400).json({
         error:
           "Either user or topic must be provided to delete a subscription.",
       });
     }
-
+    const user = await User.findOne({
+      username,
+    });
     // Find a subscription that matches the given combination and delete it.
     const deletedSubscription = await Subscription.findOneAndDelete({
-      username,
-      topic,
+      $or: [
+        susername
+          ? { user: user._id, username: susername }
+          : { user: user._id, topic },
+      ],
     });
 
     if (!deletedSubscription) {
